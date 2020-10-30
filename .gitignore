@@ -1,0 +1,10 @@
+# VS Code environment settings
+.vscode
+
+# Notepad++ backup directory
+nppBackup
+
+# Example files and other
+example
+mpv_properties.py
+*.txt
