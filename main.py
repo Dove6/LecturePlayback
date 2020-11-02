@@ -8,7 +8,6 @@ def parse_line(line):
             raise Exception()
     time = line[:line.find('@')].strip()
     page = int(line[(line.find('@')+1):].strip())
-
     time_parts = {'hours': 0, 'mins': 0, 'secs': 0, 'msecs': 0}
     if (match := re.fullmatch(r'(\d+):(\d{2}):(\d{2})(\.(\d{1,3}))?', time)) is not None:
         time_parts['hours'] = int(match.group(1))
@@ -46,6 +45,8 @@ def time_to_index(description, ms):
 
 class Application:
     def __init__(self, width, height, paths):
+        if width < 0 or height < 0:
+            raise Exception()
         self.width = width
         self.height = height
         assert('audio' in paths.keys() and 'description' in paths.keys() and 'pdf' in paths.keys())
@@ -58,18 +59,85 @@ class Application:
         self.player.video = 'no'
         self.player.pause = True
         self.player.keep_open = True
+        self.tkids = {}
+        self.tkroot = tk.Tk()
+        # self.tkroot.geometry(f'{width}x{height}')
+        self.tkroot.title(paths['pdf'])
+        self.tkroot.protocol("WM_DELETE_WINDOW", self.quit)
+        self.tkroot.bind('<Key>', self.key_callback)
+        self.tkroot.bind('<ButtonRelease-1>', self.left_release_callback)
+        self.tkcanvas = tk.Canvas(self.tkroot, width=width, height=height, borderwidth=0, highlightthickness=0)
+        self.tkcanvas.pack()
+        self.tkids['slide'] = self.tkcanvas.create_image(0, 0,
+            anchor=tk.NW)
+        self.tkids['osdbkg'] = self.tkcanvas.create_rectangle(0, height - 24, width, height,
+            fill='black', state='hidden', tags='osd')
+        self.tkids['playicon'] = self.tkcanvas.create_polygon([3, height - 22, 21, height - 12, 3, height - 2],
+            fill='white', state='hidden', tags=['osd', 'play'])
+        self.tkids['pauseicon1'] = self.tkcanvas.create_rectangle(2, height - 22, 9, height - 2,
+            fill='white', state='hidden', tags=['osd', 'pause'])
+        self.tkids['pauseicon2'] = self.tkcanvas.create_rectangle(14, height - 22, 21, height - 2,
+            fill='white', state='hidden', tags=['osd', 'pause'])
+        self.tkids['progress'] = self.tkcanvas.create_rectangle(26, height - 22, width - 28, height - 2,
+            fill='white', state='hidden', tags='osd')
+        self.tkroot.withdraw()
+        self.tkimage = None
+        self._osd_visible = False
         @self.player.property_observer('time-pos')
         def slide_changer(_name, value):
             if value is not None:
                 self.update_page(time_to_index(self.description, value * 1000))
-        self.tkroot = tk.Tk()
-        self.tkroot.title(paths['pdf'])
-        self.tkroot.bind('<Key>', self.key_callback)
-        self.tkcanvas = tk.Canvas(self.tkroot, width=width, height=height)
-        self.tkcanvas.pack()
-        self.tkroot.withdraw()
-        self.tkimage = None
+        @self.player.property_observer('percent-pos')
+        def progress_changer(_name, value):
+            if value is not None:
+                self.tkcanvas.coords(self.tkids['progress'],
+                        26, height - 22, 26 + (width - 28) * value / 100, height - 2)
     
+    def __del__(self):
+        self.player.terminate()
+        self.tkroot.destroy()
+
+    @property
+    def player_paused(self):
+        return self.player.pause
+
+    @player_paused.setter
+    def player_paused(self, value):
+        self.player.pause = bool(value)
+        if self.player.pause and self.osd_visible:
+            self.tkcanvas.itemconfig('pause', state='hidden')
+            self.tkcanvas.itemconfig('play', state='normal')
+        elif self.osd_visible:
+            self.tkcanvas.itemconfig('pause', state='normal')
+            self.tkcanvas.itemconfig('play', state='hidden')
+
+    @property
+    def osd_visible(self):
+        return self._osd_visible
+    
+    @osd_visible.setter
+    def osd_visible(self, value):
+        self._osd_visible = bool(value)
+        if self._osd_visible:
+            self.tkcanvas.itemconfig('osd', state='normal')
+            if self.player.pause:
+                self.tkcanvas.itemconfig('pause', state='hidden')
+            else:
+                self.tkcanvas.itemconfig('play', state='hidden')
+        else:
+            self.tkcanvas.itemconfig('osd', state='hidden')
+
+    def left_release_callback(self, event):
+        canvas_x = self.tkcanvas.canvasx(event.x)
+        canvas_y = self.tkcanvas.canvasy(event.y)
+        # print(event)
+        # print((canvas_x, canvas_y))
+        if canvas_x < 24 and canvas_y >= self.height - 24 and self.osd_visible:
+            self.player_paused = not self.player_paused
+        elif 26 <= canvas_x < self.width - 28 and self.height - 22 <= canvas_y < self.height - 2 and self.osd_visible:
+            secs = (canvas_x - 26) / (self.width - 28) * self.player.duration
+            self.player.seek(secs, reference='absolute')
+
     def key_callback(self, event):
         if event.keysym in ['Left', 'Right']:
             if self.player.seekable:
@@ -86,19 +154,20 @@ class Application:
                     self.update_page(index + 1)
             else:
                 self.update_page(0)
+        elif event.keysym == 'o':
+            self.osd_visible = not self.osd_visible
+        elif event.keysym in ['p', 'space']:
+            self.player_paused = not self.player_paused
         elif event.keysym in ['q', 'Escape']:
             self.quit()
 
     def update_page(self, index):
-        # print(index)
         if index is None:
             if self.page_num is not None:
-                self.tkcanvas.delete('slide')
-                self.tkimage = None
+                self.tkcanvas.itemconfig(self.tkids['slide'], image='')
                 self.page_num = None
         elif 0 <= index < len(self.pdf):
             if index != self.page_num:
-                self.tkcanvas.delete('slide')
                 page = self.pdf[index]
                 rect = page.rect
                 matrix = fitz.Matrix()
@@ -107,8 +176,8 @@ class Application:
                 matrix.f = -rect[1]
                 pix = page.getPixmap(matrix)
                 self.tkimage = tk.PhotoImage(data=pix.getImageData('ppm'))
-                self.tkcanvas.create_image((self.width - pix.width) / 2, (self.height - pix.height) / 2,
-                    anchor=tk.NW, image=self.tkimage, tags='slide')
+                self.tkcanvas.coords(self.tkids['slide'], (self.width - pix.width) / 2, (self.height - pix.height) / 2)
+                self.tkcanvas.itemconfig(self.tkids['slide'], image=self.tkimage)
                 self.page_num = index
         else:
             print('Out of range')
@@ -119,8 +188,8 @@ class Application:
         self.tkroot.mainloop()
 
     def quit(self):
-        self.tkroot.destroy()
-        self.player.terminate()
+        self.player.stop()
+        self.tkroot.quit()
         self.pdf.close()
 
 
