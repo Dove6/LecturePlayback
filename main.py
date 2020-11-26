@@ -1,51 +1,17 @@
 import argparse
 import os
-import re
 
+import descparser
 import fitz
 import mpv
 import tkinter as tk
 import tkinter.messagebox as tkmsgbox
 
 
-def parse_line(line):
-    if line.count('@') != 1:
-            raise Exception('Invalid description line format!')
-    time = line[:line.find('@')].strip()
-    page = int(line[(line.find('@')+1):].strip())
-    time_parts = {'hours': 0, 'mins': 0, 'secs': 0, 'msecs': 0}
-    if (match := re.fullmatch(r'(\d+):(\d{2}):(\d{2})(\.(\d{1,3}))?', time)) is not None:
-        time_parts['hours'] = int(match.group(1))
-        time_parts['mins'] = int(match.group(2))
-        time_parts['secs'] = int(match.group(3))
-        if match.group(4) is not None:
-            time_parts['msecs'] = int((match.group(5) + '00')[:3])
-    elif (match := re.fullmatch(r'(\d{2}):(\d{2})(\.(\d{1,3}))?', time)) is not None:
-        time_parts['mins'] = int(match.group(1))
-        time_parts['secs'] = int(match.group(2))
-        if match.group(4) is not None:
-            time_parts['msecs'] = int((match.group(4) + '00')[:3])
-    elif (match := re.fullmatch(r'(\d{2})(\.(\d{1,3}))?', time)) is not None:
-        time_parts['secs'] = int(match.group(1))
-        if match.group(4) is not None:
-            time_parts['msecs'] = int((match.group(3) + '00')[:3])
-    else:
-        raise Exception('Invalid description line format!')
-    time_ms = time_parts['msecs']
-    time_ms += time_parts['hours'] * 3600000 + time_parts['mins'] * 60000 + time_parts['secs'] * 1000
-    return {'timestamp': time_ms, 'pagename': page}
-
-def parse_description(filename):
-    timestamps = []
-    with open(filename) as desc:
-        for line in desc:
-            timestamps.append(parse_line(line))
-    return sorted(timestamps, key=(lambda x: x['timestamp']))
-
 def time_to_index(description, ms):
-    description = list(filter(lambda x: x['timestamp'] < ms, description))
-    if len(description) > 0:
-        return (description[-1]['pagename'] - 1)
+    slide_info = list(filter(lambda x: x['timestamp'] < ms, description['slide']))
+    if len(slide_info) > 0:
+        return (slide_info[-1]['pagenumber'] - 1)
 
 
 class Application:
@@ -83,7 +49,7 @@ class Application:
         self.height = height
         assert('audio' in paths.keys() and 'description' in paths.keys() and 'presentation' in paths.keys())
         self.paths = dict(filter(lambda x: x[0] in ['audio', 'description', 'presentation'], paths.items()))
-        self.description = parse_description(paths['description'])
+        self.description = descparser.parse(paths['description'])
         self.pdf = fitz.open(paths['presentation'])
         self.page_num = None
         self.player = mpv.MPV()

@@ -1,6 +1,9 @@
 # VS Code environment settings
 .vscode
 
+# Python cache
+__pycache__
+
 # Notepad++ backup directory
 nppBackup
 
