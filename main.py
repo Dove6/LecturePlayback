@@ -1,11 +1,16 @@
+import argparse
+import os
 import re
+
 import fitz
 import mpv
 import tkinter as tk
+import tkinter.messagebox as tkmsgbox
+
 
 def parse_line(line):
     if line.count('@') != 1:
-            raise Exception()
+            raise Exception('Invalid description line format!')
     time = line[:line.find('@')].strip()
     page = int(line[(line.find('@')+1):].strip())
     time_parts = {'hours': 0, 'mins': 0, 'secs': 0, 'msecs': 0}
@@ -25,7 +30,7 @@ def parse_line(line):
         if match.group(4) is not None:
             time_parts['msecs'] = int((match.group(3) + '00')[:3])
     else:
-        raise Exception()
+        raise Exception('Invalid description line format!')
     time_ms = time_parts['msecs']
     time_ms += time_parts['hours'] * 3600000 + time_parts['mins'] * 60000 + time_parts['secs'] * 1000
     return {'timestamp': time_ms, 'pagename': page}
@@ -44,15 +49,42 @@ def time_to_index(description, ms):
 
 
 class Application:
+    EXTENSIONS = {
+        'audio': sorted([
+            'aac',
+            'ape',
+            'caf',
+            'flac',
+            'm4a',
+            'm4b',
+            'm4p',
+            'm4r',
+            'mka',
+            'mp3',
+            'mpc',
+            'mpp',
+            'ogg',
+            'opus',
+            'ra',
+            'ram',
+            'shn',
+            'wma',
+            'wv',
+        ]),
+        'presentation': sorted([
+            'pdf',
+        ])
+    }
+
     def __init__(self, width, height, paths):
         if width < 0 or height < 0:
-            raise Exception()
+            raise Exception('Negative video dimensions specified!')
         self.width = width
         self.height = height
-        assert('audio' in paths.keys() and 'description' in paths.keys() and 'pdf' in paths.keys())
-        self.paths = dict(filter(lambda x: x[0] in ['audio', 'description', 'pdf'], paths.items()))
+        assert('audio' in paths.keys() and 'description' in paths.keys() and 'presentation' in paths.keys())
+        self.paths = dict(filter(lambda x: x[0] in ['audio', 'description', 'presentation'], paths.items()))
         self.description = parse_description(paths['description'])
-        self.pdf = fitz.open(paths['pdf'])
+        self.pdf = fitz.open(paths['presentation'])
         self.page_num = None
         self.player = mpv.MPV()
         self.player.play(paths['audio'])
@@ -62,7 +94,7 @@ class Application:
         self.tkids = {}
         self.tkroot = tk.Tk()
         # self.tkroot.geometry(f'{width}x{height}')
-        self.tkroot.title(paths['pdf'])
+        self.tkroot.title(paths['presentation'])
         self.tkroot.protocol("WM_DELETE_WINDOW", self.quit)
         self.tkroot.bind('<Key>', self.key_callback)
         self.tkroot.bind('<ButtonRelease-1>', self.left_release_callback)
@@ -94,8 +126,10 @@ class Application:
                         26, height - 22, 26 + (width - 28) * value / 100, height - 2)
     
     def __del__(self):
-        self.player.terminate()
-        self.tkroot.destroy()
+        if hasattr(self, 'player'):
+            self.player.terminate()
+        if hasattr(self, 'tkroot'):
+            self.tkroot.destroy()
 
     @property
     def player_paused(self):
@@ -114,7 +148,7 @@ class Application:
     @property
     def osd_visible(self):
         return self._osd_visible
-    
+
     @osd_visible.setter
     def osd_visible(self, value):
         self._osd_visible = bool(value)
@@ -194,10 +228,46 @@ class Application:
 
 
 if __name__ == '__main__':
-    app = Application(1280, 720, {
-        'audio': 'example/example.mp3',
-        'description': 'example/example.txt',
-        'pdf': 'example/example.pdf'
-    })
-    app.run()
-    print('Exited gracefully')
+    def dialog_error(exception):
+        dummy = tk.Tk()
+        dummy.withdraw()
+        tkmsgbox.showerror(type(exception).__name__, str(exception), parent=dummy)
+        dummy.quit()
+
+    def console_error(exception):
+        print(f'{type(exception).__name__}: {str(exception)}')
+
+    report_error = console_error
+
+    try:
+        parser = argparse.ArgumentParser(description='Mix audio playback and presentation display in real time accordingly to a description file.')
+        parser.add_argument('-a', '--audio', help='path of the audio file')
+        parser.add_argument('-p', '--presentation', help='path of the presentation file')
+        parser.add_argument('--width', default=1280, type=int, help='width of the video output')
+        parser.add_argument('--height', default=720, type=int, help='height of the video output')
+        parser.add_argument('--no-dialogs', action='store_true', help='use the standard output instead of GUI dialogs for error reporting')
+        parser.add_argument('description', help='path of the description file')
+        args = parser.parse_args()
+        if not args.no_dialogs:
+            report_error = dialog_error
+        filenames = {
+            'audio': args.audio,
+            'description': args.description,
+            'presentation': args.presentation
+        }
+        if not os.path.isfile(filenames['description']):
+            raise Exception('Invalid description file name!')
+        base_name =  os.path.splitext(args.description)[0]
+        for file_type in ['audio', 'presentation']:
+            if filenames[file_type] is None:
+                for extension in Application.EXTENSIONS[file_type]:
+                    filenames[file_type] = f'{base_name}.{extension}'
+                    if os.path.isfile(filenames[file_type]):
+                        break
+                else:
+                    raise Exception(f'No {file_type} file path provided and no suitable file found!')
+        app = Application(args.width, args.height, filenames)
+        app.run()
+        print('Exited gracefully')
+    except Exception as e:
+        report_error(e)
